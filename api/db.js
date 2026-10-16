@@ -64,7 +64,7 @@ function cleanRunner(r, clientId) {
         key: STR(r.key, 40), rid: STR(r.rid, 120), name: STR(r.name, 120), cuisine: STR(r.cuisine, 60),
         cuisines: Array.isArray(r.cuisines) ? r.cuisines.filter(x => typeof x === 'string').slice(0, 10).map(x => x.slice(0, 60)) : [],
         rating: NUM(r.rating), ratingCount: NUM(r.ratingCount) || 0, deliveryMinutes: NUM(r.deliveryMinutes), deliveryMax: NUM(r.deliveryMax),
-        url: STR(r.url, 500) || '', image: STR(r.image, 600), logo: STR(r.logo, 600), minOrder: NUM(r.minOrder), brand: STR(r.brand, 80),
+        url: STR(r.url, 500) || '', urls: r.urls && typeof r.urls === 'object' ? { thuisbezorgd: STR(r.urls.thuisbezorgd, 500), ubereats: STR(r.urls.ubereats, 500) } : null, image: STR(r.image, 600), logo: STR(r.logo, 600), minOrder: NUM(r.minOrder), brand: STR(r.brand, 80),
         coat: STR(r.coat, 40), seed: NUM(r.seed), dogName: STR(r.dogName, 80),
         schedule: r.schedule && typeof r.schedule === 'object' && JSON.stringify(r.schedule).length < 3000 ? r.schedule : null,
         by: STR(r.by, 24) || 'Collega', byId: clientId,
