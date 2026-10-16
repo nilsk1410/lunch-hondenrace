@@ -629,6 +629,12 @@ footer .foot-logo { height: 24px; width: auto; display: block; margin: 0 auto 8p
 .cand.mine { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft); }
 .ro-banner.pick { background: #ecebfb; color: var(--text); border-bottom-color: rgba(53, 38, 188, 0.18); display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; font-size: 13.5px; }
 .ro-banner.err { background: #fde8ec; color: #8a1230; border-bottom-color: #f5b9c6; }
+.plats { display: flex; gap: 5px; flex-wrap: wrap; margin: 2px 0 4px; }
+.plat { font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 6px; text-decoration: none; letter-spacing: .02em; }
+.plat.thuisbezorgd { background: #fff1e6; color: #b45309; }
+.plat.ubereats { background: #e8f7ee; color: #06783f; }
+.ue-btn { background: #06c167; color: #fff; border-color: #06c167; }
+.ue-btn:hover { background: #05a85a; }
 
 </style>
 <div id="root"></div>
@@ -1338,18 +1344,108 @@ window.dispatchEvent(new Event('lunchthree'));
     // ---------- Thuisbezorgd-import ----------
     const MSG_TYPE = 'diggle-lunchrace-import';
 
-    // Deze functie draait als bladwijzer OP thuisbezorgd.nl. Ze leest de restaurantlijst
-    // die al in de pagina zit en stuurt die terug naar de Hondenrace (postMessage),
-    // of kopieert hem als dat niet kan.
+    // Deze functie draait als bladwijzer OP thuisbezorgd.nl of ubereats.com. Ze leest de restaurantlijst
+    // en stuurt die terug naar de Hondenrace (postMessage), of kopieert hem als dat niet kan.
     function bookmarkletSource() {
         var T = 'diggle-lunchrace-import';
-        function note(html, ok) {
-            var d = document.createElement('div');
+        function note(html, ok, keep) {
+            var d = document.getElementById('lhr-note');
+            if (!d) { d = document.createElement('div'); d.id = 'lhr-note'; document.body.appendChild(d); }
             d.setAttribute('style', 'position:fixed;z-index:2147483647;top:18px;left:50%;transform:translateX(-50%);background:' + (ok ? '#3526BC' : '#c81e45') + ';color:#fff;font:600 15px/1.4 system-ui,sans-serif;padding:14px 20px;border-radius:12px;box-shadow:0 12px 30px rgba(0,0,0,.35);max-width:90vw;text-align:center');
-            d.innerHTML = html; document.body.appendChild(d);
-            setTimeout(function () { d.remove(); }, 6000);
+            d.innerHTML = html;
+            clearTimeout(window.__lhrNoteT); if (!keep) window.__lhrNoteT = setTimeout(function () { d.remove(); }, 6000);
+        }
+        function deliver(list, platform, label) {
+            var payload = { type: T, version: 3, platform: platform, location: location.pathname.split('/').pop(), source: location.href, timestamp: new Date().toISOString(), restaurants: list };
+            if (window.opener && !window.opener.closed) {
+                window.opener.postMessage(payload, '*');
+                note('🐕 ' + list.length + ' restaurants van ' + label + ' verstuurd naar de Lunch Hondenrace!<br><small>Dit tabblad sluit vanzelf…</small>', true);
+                setTimeout(function () { try { window.opener.focus(); } catch (e) { } window.close(); }, 1600);
+                return;
+            }
+            var txt = JSON.stringify(payload);
+            var done = function () { note('🐕 ' + list.length + ' restaurants van ' + label + ' gekopieerd.<br>Ga terug naar de Hondenrace en druk op Ctrl+V (Mac: ⌘+V).', true); };
+            var fallback = function () { var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); done(); };
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, fallback); else fallback();
+        }
+        // ---------- Uber Eats ----------
+        function uber() {
+            note('🐕 Restaurants ophalen bij Uber Eats…', true, true);
+            var H = { 'content-type': 'application/json', 'x-csrf-token': 'x' };
+            var post = function (path, body) {
+                return fetch('/_p/api/' + path, { method: 'POST', credentials: 'include', headers: H, body: JSON.stringify(body) })
+                    .then(function (r) { if (!r.ok) throw new Error('Uber Eats antwoordde ' + r.status); return r.json(); });
+            };
+            var stores = {}, order = [];
+            var add = function (st) { if (!st || !st.storeUuid || stores[st.storeUuid]) return; stores[st.storeUuid] = st; order.push(st.storeUuid); };
+            var page = function (offset) {
+                return post('getFeedV1', { pageInfo: { offset: offset, pageSize: 80 } }).then(function (j) {
+                    var d = (j && j.data) || {}, items = d.feedItems || [];
+                    items.forEach(function (it) { if (it.store) add(it.store); if (it.carousel && it.carousel.stores) it.carousel.stores.forEach(add); });
+                    if (d.meta && d.meta.hasMore && items.length && offset < 480) return page(offset + items.length);
+                });
+            };
+            var txt = function (x) { return x == null ? '' : typeof x === 'string' ? x : (x.text || x.title || x.name || ''); };
+            var hm = function (m) { m = Math.max(0, Math.min(1439, m | 0)); return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2); };
+            var fromDom = function () {
+                var seen = {}, out = [];
+                Array.prototype.forEach.call(document.querySelectorAll('a[href*="/store/"]'), function (a) {
+                    var href = a.getAttribute('href').split('?')[0]; if (seen[href]) return;
+                    var card = a.closest('[data-testid="store-card"]') || a.parentElement || a;
+                    var h = card.querySelector('h3') || a.querySelector('h3');
+                    var name = (h ? h.textContent : a.textContent || '').trim(); if (!name || name.length > 80) return;
+                    seen[href] = 1;
+                    var t = card.textContent || '', r = t.match(/\b([1-5][.,]\d)\b/), e = t.match(/(\d{1,3})\s*[–-]\s*(\d{1,3})\s*min/i), img = card.querySelector('img');
+                    out.push({ id: href.split('/').pop(), name: name, rating: r ? parseFloat(r[1].replace(',', '.')) : null, etaMin: e ? +e[1] : null, etaMax: e ? +e[2] : null, image: img ? img.src : null, url: location.origin + href, cuisines: [] });
+                });
+                return out;
+            };
+            page(0).catch(function () { }).then(function () {
+                if (!order.length) {
+                    var dom = fromDom();
+                    if (!dom.length) { note('🐕 Geen restaurants gevonden.<br>Stel eerst je bezorgadres in op Uber Eats en open de startpagina met restaurants.', false); return; }
+                    return deliver(dom, 'ubereats', 'Uber Eats');
+                }
+                var ids = order.slice(0, 220), det = {}, i = 0, n = 0;
+                var worker = function () {
+                    if (i >= ids.length) return Promise.resolve();
+                    var id = ids[i++];
+                    return post('getStoreV1', { storeUuid: id, diningMode: 'DELIVERY', time: { asap: true }, cbType: 'EATER_ENDORSED' })
+                        .then(function (j) { det[id] = (j && j.data) || null; }, function () { })
+                        .then(function () { n++; if (n % 5 === 0) note('🐕 Uber Eats: details ophalen… ' + n + ' / ' + ids.length, true, true); return worker(); });
+                };
+                var ws = []; for (var k = 0; k < 6; k++) ws.push(worker());
+                return Promise.all(ws).then(function () {
+                    var list = ids.map(function (id) {
+                        var st = stores[id], d = det[id] || {};
+                        var metas = [].concat(st.meta || [], st.meta2 || []).map(txt).join(' · ');
+                        var eta = String((d.etaRange && d.etaRange.text) || metas).match(/(\d{1,3})\s*[–-]\s*(\d{1,3})/);
+                        var rt = d.rating || {}, rs = st.rating || {};
+                        var cnt = String(rt.reviewCount || rs.accessibilityText || '').replace(/[.,](?=\d{3})/g, '').match(/\d+/);
+                        var open = null, close = null;
+                        (d.hours || []).forEach(function (h) { (h.sectionHours || []).forEach(function (sh) { if (sh.startTime != null && (open == null || sh.startTime < open)) open = sh.startTime; if (sh.endTime != null && (close == null || sh.endTime > close)) close = sh.endTime; }); });
+                        var imgs = (st.image && st.image.items) || [], best = null;
+                        imgs.forEach(function (im) { if (im && im.url && (!best || ((im.width || 0) <= 800 && (im.width || 0) > (best.width || 0)))) best = im; });
+                        var hero = d.heroImageUrls && d.heroImageUrls[0]; hero = hero && (hero.url || hero);
+                        var tr = (st.tracking && st.tracking.storePayload) || {};
+                        return {
+                            id: id, name: d.title || txt(st.title), slug: d.slug || null,
+                            rating: parseFloat(rt.ratingValue || rs.text) || null, ratingCount: cnt ? +cnt[0] : 0,
+                            etaMin: eta ? +eta[1] : null, etaMax: eta ? +eta[2] : null,
+                            cuisines: (d.categories || []).map(txt).filter(function (c) { return c && !/^[$€£¥]+$/.test(c); }),
+                            open: open != null ? hm(open) : null, close: close != null ? hm(close) : null,
+                            orderable: d.isOrderable != null ? !!d.isOrderable : tr.isOrderable !== false, availability: tr.storeAvailablityState || null,
+                            image: (best && best.url) || (typeof hero === 'string' ? hero : null),
+                            url: location.origin + (st.actionUrl || ('/store/' + (d.slug || 'x') + '/' + id)),
+                            lat: st.mapMarker ? st.mapMarker.latitude : null, lng: st.mapMarker ? st.mapMarker.longitude : null,
+                        };
+                    }).filter(function (x) { return x.name; });
+                    deliver(list, 'ubereats', 'Uber Eats');
+                });
+            }).catch(function (e) { note('🐕 Uber Eats lezen mislukte: ' + e.message, false); });
         }
         try {
+            if (/(^|\.)ubereats\.com$/.test(location.hostname)) { uber(); return; }
             var rd = null, el = document.getElementById('__NEXT_DATA__');
             if (el) { try { rd = JSON.parse(el.textContent).props.appProps.preloadedState.discovery.restaurantList.restaurantData; } catch (e) { } }
             if (!rd) {
@@ -1365,7 +1461,7 @@ window.dispatchEvent(new Event('lunchthree'));
                     if (end > 0) rd = JSON.parse(h.substring(st, end + 1));
                 }
             }
-            if (!rd) { note('🐕 Geen restaurantlijst gevonden.<br>Open eerst een Thuisbezorgd-pagina met restaurants voor je postcode.', false); return; }
+            if (!rd) { note('🐕 Geen restaurantlijst gevonden.<br>Open eerst een Thuisbezorgd- of Uber Eats-pagina met restaurants voor je adres.', false); return; }
             var list = [];
             Object.keys(rd).forEach(function (k) {
                 var x = rd[k]; if (!x || x.isTestRestaurant) return;
@@ -1385,17 +1481,7 @@ window.dispatchEvent(new Event('lunchthree'));
                     deals: (x.deals || []).length
                 });
             });
-            var payload = { type: T, version: 2, location: location.pathname.split('/').pop(), source: location.href, timestamp: new Date().toISOString(), restaurants: list };
-            if (window.opener && !window.opener.closed) {
-                window.opener.postMessage(payload, '*');
-                note('🐕 ' + list.length + ' restaurants verstuurd naar de Lunch Hondenrace!<br><small>Dit tabblad sluit vanzelf…</small>', true);
-                setTimeout(function () { try { window.opener.focus(); } catch (e) { } window.close(); }, 1600);
-                return;
-            }
-            var txt = JSON.stringify(payload);
-            var done = function () { note('🐕 ' + list.length + ' restaurants gekopieerd.<br>Ga terug naar de Hondenrace en druk op Ctrl+V (Mac: ⌘+V).', true); };
-            var fallback = function () { var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); done(); };
-            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, fallback); else fallback();
+            deliver(list, 'thuisbezorgd', 'Thuisbezorgd');
         } catch (e) { note('🐕 Import mislukt: ' + e.message, false); }
     }
     function bookmarkletHref() {
@@ -1432,13 +1518,98 @@ window.dispatchEvent(new Event('lunchthree'));
                 deliveryMinutes: x.etaMin || x.etaMax || 35, deliveryMax: x.etaMax || null,
                 cuisines, schedule, scheduleEstimated: true,
                 url: x.slug ? 'https://www.thuisbezorgd.nl/menu/' + x.slug : 'https://www.thuisbezorgd.nl',
+                urls: { thuisbezorgd: x.slug ? 'https://www.thuisbezorgd.nl/menu/' + x.slug : null },
                 image: banner, logo: x.logo || null,
                 distanceKm: x.distance ? Math.round(x.distance / 100) / 10 : null,
                 minOrder: x.minOrder, fee: x.fee, deals: x.deals || 0, offline: !!x.offline,
                 source: 'thuisbezorgd', importedAt: payload.timestamp || new Date().toISOString(),
             }));
         }
-        return { restaurants: out, skipped, location: payload.location || '', timestamp: payload.timestamp };
+        return { restaurants: out, skipped, location: payload.location || '', timestamp: payload.timestamp, platform: 'thuisbezorgd', platformLabel: 'Thuisbezorgd' };
+    }
+
+    // Uber Eats (bladwijzer op ubereats.com) -> genormaliseerde restaurants
+    function fromUberEats(payload) {
+        const out = [], skipped = [];
+        for (const x of payload.restaurants || []) {
+            if (!x || !x.name) continue;
+            const cuisines = (x.cuisines || []).filter(c => c && !NON_FOOD.test(c));
+            if (NON_FOOD_NAME.test(x.name) || /\b(albert heijn|jumbo|spar|lidl|aldi|plus|coop|etos|kruidvat|hema)\b/i.test(x.name)) { skipped.push(x.name); continue; }
+            const schedule = emptySchedule();
+            const known = !!(x.open && x.close);
+            const open = x.open || '11:00', close = x.close || '21:30';
+            DAYS.forEach(d => schedule[d] = { open, close: close === '00:00' ? '23:59' : close });
+            out.push(normalize({
+                id: 'ue-' + x.id, name: x.name, rating: x.rating, ratingCount: x.ratingCount,
+                deliveryMinutes: x.etaMin || x.etaMax || 35, deliveryMax: x.etaMax || null,
+                cuisines, cuisine: cuisines.length ? mapCuisines(cuisines) : (matchCuisine(x.name) || mapCuisines([])),
+                schedule, scheduleEstimated: !known,
+                url: x.url || 'https://www.ubereats.com', urls: { ubereats: x.url || null },
+                image: x.image || null, offline: x.orderable === false && x.availability === 'STORE_UNAVAILABLE',
+                lat: x.lat || null, lng: x.lng || null,
+                source: 'ubereats', importedAt: payload.timestamp || new Date().toISOString(),
+            }));
+        }
+        return { restaurants: out, skipped, location: 'Uber Eats', timestamp: payload.timestamp, platform: 'ubereats', platformLabel: 'Uber Eats' };
+    }
+    const fromPayload = p => p && p.platform === 'ubereats' ? fromUberEats(p) : fromThuisbezorgd(p);
+
+    // ---------- Dubbelen herkennen (zelfde restaurant op Thuisbezorgd én Uber Eats, of twee keer in de lijst) ----------
+    const NAME_STOP = new Set(['eindhoven', 'restaurant', 'the', 'de', 'het', 'nl', 'bv', 'delivery', 'bezorging', 'bezorgen', 'afhalen', 'and', 'en', 'by', 'van', '&', '-']);
+    const nameTokens = n => strip(String(n || '').replace(/['’`´]/g, '').replace(/[®™©]/g, ' ')).replace(/[&\-]/g, ' ').split(' ').filter(w => w && !NAME_STOP.has(w));
+    const nameKey = n => nameTokens(n).sort().join(' ');
+    const PLATFORMS = { thuisbezorgd: 'Thuisbezorgd', ubereats: 'Uber Eats' };
+    const urlsOf = r => {
+        const u = Object.assign({}, r.urls || {});
+        if (r.url) { if (/thuisbezorgd\.nl/.test(r.url) && !u.thuisbezorgd) u.thuisbezorgd = r.url; if (/ubereats\.com/.test(r.url) && !u.ubereats) u.ubereats = r.url; }
+        Object.keys(u).forEach(k => { if (!u[k]) delete u[k]; });
+        return u;
+    };
+    // zoekt in `list` het restaurant dat hetzelfde is als `r` (null als het niet eenduidig is)
+    function findSame(list, r, skip) {
+        const key = nameKey(r.name); if (!key) return null;
+        const exact = list.filter(x => x !== skip && x.id !== r.id && nameKey(x.name) === key);
+        if (exact.length === 1) return exact[0];
+        if (exact.length > 1) return null;
+        // de kortere naam moet het begin van de langere zijn ("Sushi Eight" ↔ "Sushi Eight & Tony's Wok"),
+        // niet ergens middenin ("Wok To Go" ≠ "Yin Sushi & Wok to go")
+        const a = nameTokens(r.name);
+        const cands = list.filter(x => {
+            if (x === skip || x.id === r.id) return false;
+            const b = nameTokens(x.name);
+            const [small, big] = a.length <= b.length ? [a, b] : [b, a];
+            if (small.length < 2 || small.length === big.length) return false;
+            return small.every((w, i) => big[i] === w);
+        });
+        return cands.length === 1 ? cands[0] : null;
+    }
+    // twee records van hetzelfde restaurant samenvoegen; `cur` blijft de basis
+    function mergeOne(cur, inc) {
+        const urls = Object.assign({}, urlsOf(cur), urlsOf(inc));
+        const next = Object.assign({}, cur, {
+            rating: cur.rating != null && (cur.ratingCount || 0) >= (inc.ratingCount || 0) ? cur.rating : (inc.rating != null ? inc.rating : cur.rating),
+            ratingCount: Math.max(cur.ratingCount || 0, inc.ratingCount || 0),
+            deliveryMinutes: Math.min(cur.deliveryMinutes || 99, inc.deliveryMinutes || 99),
+            image: cur.image || inc.image, logo: cur.logo || inc.logo, brand: cur.brand || inc.brand,
+            cuisines: cur.cuisines && cur.cuisines.length ? cur.cuisines : inc.cuisines,
+            urls, url: urls.thuisbezorgd || urls.ubereats || cur.url || inc.url,
+            platforms: Object.keys(urls),
+        });
+        if (cur.cuisine === '🍽️ Overig' && inc.cuisine) next.cuisine = inc.cuisine;
+        // echte openingstijden winnen van geschatte
+        if (!cur.scheduleEdited && cur.scheduleEstimated && inc.scheduleEstimated === false) { next.schedule = inc.schedule; next.scheduleEstimated = false; }
+        if (inc.source === 'ubereats') next.ueId = inc.id; else if (inc.source === 'thuisbezorgd') next.tbId = inc.id;
+        return next;
+    }
+    // hele lijst ontdubbelen; geeft { list, merged: [[naam, naam], ...] }
+    function dedupeRestaurants(list) {
+        const out = [], merged = [];
+        for (const r of list) {
+            const same = findSame(out, r);
+            if (same) { out[out.indexOf(same)] = mergeOne(same, r); merged.push([same.name, r.name]); }
+            else out.push(r);
+        }
+        return { list: out, merged };
     }
 
     // Opgeslagen Thuisbezorgd-pagina (.html) of back-up (.json) uitlezen
@@ -1447,7 +1618,7 @@ window.dispatchEvent(new Event('lunchthree'));
         if (!text) throw new Error('Leeg bestand');
         if (text[0] === '{' || text[0] === '[') {
             const j = JSON.parse(text);
-            if (j && j.type === MSG_TYPE) return { kind: 'thuisbezorgd', data: fromThuisbezorgd(j) };
+            if (j && j.type === MSG_TYPE) return { kind: 'thuisbezorgd', data: fromPayload(j) };
             if (j && Array.isArray(j.restaurants) && j.restaurants.length && (j.restaurants[0].schedule || j.version)) {
                 if (j.restaurants[0].schedule) return { kind: 'backup', data: j };
             }
@@ -1478,37 +1649,45 @@ window.dispatchEvent(new Event('lunchthree'));
         return { kind: 'thuisbezorgd', data: fromThuisbezorgd({ type: MSG_TYPE, restaurants: list, location: '', timestamp: new Date().toISOString() }) };
     }
 
-    // Samenvoegen: bestaande (op naam of id) bijwerken, nieuwe toevoegen
+    // Samenvoegen: bestaande (op id, platform-id of naam) bijwerken, nieuwe toevoegen, dubbelen samenvoegen
     function mergeRestaurants(existing, incoming, mode) {
+        const platform = incoming[0] && incoming[0].source;
+        let base = existing.slice();
         if (mode === 'replace') {
-            // handmatige restaurants blijven altijd bestaan
-            const keep = existing.filter(r => r.source === 'handmatig');
-            const names = new Set(incoming.map(r => normName(r.name)));
-            return { list: incoming.concat(keep.filter(r => !names.has(normName(r.name)))), added: incoming.length, updated: 0 };
+            // vervangen geldt alleen voor restaurants van hetzelfde platform; eigen restaurants en het andere platform blijven
+            base = base.filter(r => r.source === 'handmatig' || (r.source !== platform && r.source !== 'default') || (r.platforms || []).length > 1);
         }
-        const byId = new Map(existing.map(r => [r.id, r]));
-        const byName = new Map(existing.map(r => [normName(r.name), r]));
-        const list = existing.slice();
-        let added = 0, updated = 0;
+        const list = base;
+        let added = 0, updated = 0, merged = 0;
         for (const inc of incoming) {
-            const cur = byId.get(inc.id) || byName.get(normName(inc.name));
+            let cur = list.find(r => r.id === inc.id || r.tbId === inc.id || r.ueId === inc.id);
+            const samePlatform = !!cur;
+            if (!cur) cur = list.find(r => normName(r.name) === normName(inc.name)) || findSame(list, inc);
             if (cur) {
                 const i = list.indexOf(cur);
-                const next = Object.assign({}, cur, {
-                    rating: inc.rating != null ? inc.rating : cur.rating,
-                    ratingCount: inc.ratingCount || cur.ratingCount,
-                    deliveryMinutes: inc.deliveryMinutes, deliveryMax: inc.deliveryMax,
-                    image: inc.image || cur.image, logo: inc.logo || cur.logo, brand: inc.brand || cur.brand, slug: inc.slug || cur.slug,
-                    cuisines: inc.cuisines && inc.cuisines.length ? inc.cuisines : cur.cuisines,
-                    url: inc.url || cur.url, distanceKm: inc.distanceKm, minOrder: inc.minOrder, fee: inc.fee, deals: inc.deals,
-                    offline: inc.offline, importedAt: inc.importedAt, tbId: inc.id,
-                });
-                // roosters die (deels) door de gebruiker of standaardlijst bekend zijn niet overschrijven
-                if (cur.scheduleEstimated && !cur.scheduleEdited) next.schedule = inc.schedule;
-                list[i] = next; updated++;
-            } else { list.push(inc); added++; }
+                let next;
+                if (samePlatform || cur.source === inc.source || cur.source === 'default') {
+                    next = Object.assign({}, cur, {
+                        rating: inc.rating != null ? inc.rating : cur.rating,
+                        ratingCount: inc.ratingCount || cur.ratingCount,
+                        deliveryMinutes: inc.deliveryMinutes, deliveryMax: inc.deliveryMax,
+                        image: inc.image || cur.image, logo: inc.logo || cur.logo, brand: inc.brand || cur.brand, slug: inc.slug || cur.slug,
+                        cuisines: inc.cuisines && inc.cuisines.length ? inc.cuisines : cur.cuisines,
+                        distanceKm: inc.distanceKm, minOrder: inc.minOrder, fee: inc.fee, deals: inc.deals,
+                        offline: inc.offline, importedAt: inc.importedAt,
+                    });
+                    const urls = Object.assign({}, urlsOf(cur), urlsOf(inc));
+                    next.urls = urls; next.platforms = Object.keys(urls); next.url = urls.thuisbezorgd || urls.ubereats || inc.url || cur.url;
+                    if (inc.source === 'ubereats') next.ueId = inc.id; else next.tbId = inc.id;
+                    // roosters die (deels) door de gebruiker of standaardlijst bekend zijn niet overschrijven
+                    if (cur.scheduleEstimated && !cur.scheduleEdited) { next.schedule = inc.schedule; next.scheduleEstimated = inc.scheduleEstimated; }
+                    updated++;
+                } else { next = mergeOne(cur, inc); merged++; }
+                list[i] = next;
+            } else { const n = Object.assign({}, inc, { urls: urlsOf(inc), platforms: Object.keys(urlsOf(inc)) }); list.push(n); added++; }
         }
-        return { list, added, updated };
+        const d = dedupeRestaurants(list);
+        return { list: d.list, added, updated, merged: merged + d.merged.length };
     }
 
     // ---------- Kansen ----------
@@ -1762,7 +1941,7 @@ window.dispatchEvent(new Event('lunchthree'));
         CUISINES, ALL_CUISINE_LABELS, matchCuisine, mapCuisines, imageFor, cuisineEmoji, cuisineText,
         chainOf, isSubway, normName, normalize, fromDefault, migrateLegacyList, emptySchedule,
         earliestFood, availability,
-        MSG_TYPE, bookmarkletSource, bookmarkletHref, fromThuisbezorgd, parseImportText, mergeRestaurants,
+        MSG_TYPE, bookmarkletSource, bookmarkletHref, fromThuisbezorgd, fromUberEats, fromPayload, parseImportText, mergeRestaurants, dedupeRestaurants, findSame, nameKey, urlsOf, PLATFORMS,
         winWeights, shortName, dogName, SoundEngine, LINES, pick, RacePlayer,
     };
     if (typeof module !== 'undefined') module.exports = root.LunchCore;
@@ -3893,7 +4072,12 @@ function WinnerModal({ result, onClose, onReplay, onAgain, tipResults, filters }
       onClose,
       bare: true,
       wide: true,
-      footer: /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "btn ghost", onClick: onClose }, "Sluiten"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: onReplay }, /* @__PURE__ */ React.createElement(Icon, { name: "replay" }), " Herhaling finish"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: onAgain }, /* @__PURE__ */ React.createElement(Icon, { name: "shuffle" }), " Nog een race"), w.url && /* @__PURE__ */ React.createElement("a", { className: "btn go", href: w.url, target: "_blank", rel: "noopener noreferrer" }, /* @__PURE__ */ React.createElement(Icon, { name: "utensils" }), " Bestel bij ", C.shortName(w.name)))
+      footer: /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "btn ghost", onClick: onClose }, "Sluiten"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: onReplay }, /* @__PURE__ */ React.createElement(Icon, { name: "replay" }), " Herhaling finish"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: onAgain }, /* @__PURE__ */ React.createElement(Icon, { name: "shuffle" }), " Nog een race"), (() => {
+        const u = C.urlsOf(w), ks = Object.keys(u);
+        if (!ks.length) return null;
+        if (ks.length === 1) return /* @__PURE__ */ React.createElement("a", { className: "btn go", href: u[ks[0]], target: "_blank", rel: "noopener noreferrer" }, /* @__PURE__ */ React.createElement(Icon, { name: "utensils" }), " Bestel bij ", C.shortName(w.name), /* @__PURE__ */ React.createElement("small", { style: { opacity: 0.75, fontWeight: 600 } }, "\xA0\xB7 ", C.PLATFORMS[ks[0]]));
+        return ks.map((k) => /* @__PURE__ */ React.createElement("a", { key: k, className: "btn go", href: u[k], target: "_blank", rel: "noopener noreferrer" }, /* @__PURE__ */ React.createElement(Icon, { name: "utensils" }), " Bestel via ", C.PLATFORMS[k]));
+      })())
     },
     /* @__PURE__ */ React.createElement("div", { className: "win-top" }, /* @__PURE__ */ React.createElement("div", { className: "rays" }), /* @__PURE__ */ React.createElement("img", { className: "decoimg", src: DIGGLE_DECO, alt: "" }), /* @__PURE__ */ React.createElement("button", { className: "icon-btn sm", onClick: onClose, "aria-label": "Sluiten", style: { position: "absolute", right: 12, top: 12, zIndex: 2, background: "rgba(255,255,255,.12)", color: "#fff", borderColor: "rgba(255,255,255,.3)" } }, /* @__PURE__ */ React.createElement(Icon, { name: "x" })), /* @__PURE__ */ React.createElement("div", { className: "win-kicker" }, result.photo ? "\u{1F4F8} Gewonnen in een fotofinish" : "Winnaar van de Lunch Derby"), /* @__PURE__ */ React.createElement("div", { className: "win-name" }, w.name), /* @__PURE__ */ React.createElement("div", { className: "win-sub" }, "Box ", w.box, " \xB7 ", w.dogName, " \xB7 ", result.margin < 0.5 ? "met een neuslengte" : "met " + result.margin.toFixed(1) + " meter voorsprong"), /* @__PURE__ */ React.createElement("div", { className: "podium" }, pod.map((r, k) => r ? /* @__PURE__ */ React.createElement("div", { key: r.key, className: "pod " + ["p2", "p1", "p3"][k] }, /* @__PURE__ */ React.createElement("div", { className: "dogwrap" }, /* @__PURE__ */ React.createElement(DogAvatar, { coat: r.coat, seed: r.seed, number: r.box, idle: k === 1, pose: 0.2, run: 0.6 })), /* @__PURE__ */ React.createElement("div", { className: "blk" }, ["2", "1", "3"][k], /* @__PURE__ */ React.createElement("small", null, C.shortName(r.name)))) : /* @__PURE__ */ React.createElement("div", { key: k, className: "pod" })))),
     /* @__PURE__ */ React.createElement("div", { className: "modal-b" }, /* @__PURE__ */ React.createElement("div", { className: "win-info" }, /* @__PURE__ */ React.createElement("div", { className: "rimg", style: { borderRadius: 12, aspectRatio: "auto", height: 96 } }, /* @__PURE__ */ React.createElement(RestaurantImg, { r: w, w: 320 })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 800, fontSize: 18 } }, w.name), /* @__PURE__ */ React.createElement("div", { className: "rstats", style: { marginTop: 6 } }, /* @__PURE__ */ React.createElement("span", null, w.cuisine), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Icon, { name: "star", size: 13, style: { color: "#d99a06" } }), " ", w.rating != null ? w.rating.toFixed(1) : "nieuw", w.ratingCount ? ` (${w.ratingCount})` : ""), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Icon, { name: "truck", size: 13 }), " ", w.deliveryMinutes, w.deliveryMax ? "\u2013" + w.deliveryMax : "", " min"), w.minOrder != null && /* @__PURE__ */ React.createElement("span", null, "Min. \u20AC", w.minOrder.toFixed(2).replace(".", ","))), /* @__PURE__ */ React.createElement("div", { className: "avail " + (av.ok ? "ok" : "no"), style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement(Icon, { name: "clock", size: 13 }), " ", av.ok ? `Bestel nu, eten om \xB1${C.fromMin(Math.max(av.first, C.toMin((/* @__PURE__ */ new Date()).toTimeString().slice(0, 5)) + w.deliveryMinutes))}` : av.reason))), tipResults && tipResults.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "tips-result" }, /* @__PURE__ */ React.createElement("b", null, "Tips:"), " ", tipResults.map((t, i) => /* @__PURE__ */ React.createElement("span", { key: i, className: "tr-i" }, t.avatarUrl && /* @__PURE__ */ React.createElement("img", { src: t.avatarUrl, alt: "" }), t.name, " ", t.pts === 3 ? "\u{1F3AF} +3" : t.pts === 1 ? "\u{1F949} +1" : "\u2717"))), /* @__PURE__ */ React.createElement("div", { className: "dim", style: { fontSize: 12.5, marginTop: 12 } }, "Uitslag: ", result.order.map((r, i) => `${i + 1}. ${C.shortName(r.name)}`).join("  \xB7  ")))
@@ -3927,6 +4111,7 @@ function RestaurantsTab(props) {
     return list.sort(by);
   }, [restaurants, filters, exSet, labels, q, show, sort, counts]);
   const okCount = rows.filter((x) => x.c.ok).length;
+  const dups = useMemo(() => C.dedupeRestaurants(restaurants).merged, [restaurants]);
   function step(r, d) {
     if (busy) return;
     if (d < 0) {
@@ -3940,11 +4125,18 @@ function RestaurantsTab(props) {
     if ((counts.get(r.id) || 0) >= settings.maxSame) return toast(`Max. ${settings.maxSame}\xD7 hetzelfde restaurant`, "err");
     setLineup((l) => [...l, makeRunner(r)]);
   }
-  return /* @__PURE__ */ React.createElement("div", null, importUI, /* @__PURE__ */ React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { className: "filterbar", style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { className: "field", style: { flex: "1 1 220px" } }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement(Icon, { name: "search", size: 12 }), " Zoeken"), /* @__PURE__ */ React.createElement("div", { className: "search" }, /* @__PURE__ */ React.createElement(Icon, { name: "search" }), /* @__PURE__ */ React.createElement("input", { className: "input sm", placeholder: "Naam of keuken\u2026", value: q, onChange: (e) => setQ(e.target.value) }))), /* @__PURE__ */ React.createElement(FilterFields, { filters, setFilters }), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", null, "Sorteren"), /* @__PURE__ */ React.createElement("select", { className: "input sm", value: sort, onChange: (e) => setSort(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "match" }, "Beschikbaar eerst"), /* @__PURE__ */ React.createElement("option", { value: "rating" }, "Rating"), /* @__PURE__ */ React.createElement("option", { value: "naam" }, "Naam"), /* @__PURE__ */ React.createElement("option", { value: "bezorgtijd" }, "Bezorgtijd"), /* @__PURE__ */ React.createElement("option", { value: "afstand" }, "Afstand")))), /* @__PURE__ */ React.createElement(CuisineChips, { restaurants, filters, setFilters, labels, limit: 18 })), /* @__PURE__ */ React.createElement("div", { className: "toolbar" }, /* @__PURE__ */ React.createElement("div", { className: "seg", role: "tablist" }, [["alle", "Alle"], ["beschikbaar", "Beschikbaar"], ["race", "In de race"], ["uitgesloten", "Uitgesloten"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, className: show === k ? "on" : "", onClick: () => setShow(k) }, l))), /* @__PURE__ */ React.createElement("div", { className: "dim", style: { fontSize: 13 } }, /* @__PURE__ */ React.createElement("b", { style: { color: "var(--text)" } }, okCount), " beschikbaar \xB7 ", rows.length, " getoond \xB7 ", restaurants.length, " totaal"), !readOnly && /* @__PURE__ */ React.createElement("div", { className: "btn-row" }, /* @__PURE__ */ React.createElement("button", { className: "btn sm", onClick: () => onEdit({}) }, /* @__PURE__ */ React.createElement(Icon, { name: "plus" }), " Restaurant toevoegen"))), /* @__PURE__ */ React.createElement("div", { className: "r-grid" }, rows.map(({ r, c }) => {
+  return /* @__PURE__ */ React.createElement("div", null, importUI, /* @__PURE__ */ React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { className: "filterbar", style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { className: "field", style: { flex: "1 1 220px" } }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement(Icon, { name: "search", size: 12 }), " Zoeken"), /* @__PURE__ */ React.createElement("div", { className: "search" }, /* @__PURE__ */ React.createElement(Icon, { name: "search" }), /* @__PURE__ */ React.createElement("input", { className: "input sm", placeholder: "Naam of keuken\u2026", value: q, onChange: (e) => setQ(e.target.value) }))), /* @__PURE__ */ React.createElement(FilterFields, { filters, setFilters }), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", null, "Sorteren"), /* @__PURE__ */ React.createElement("select", { className: "input sm", value: sort, onChange: (e) => setSort(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "match" }, "Beschikbaar eerst"), /* @__PURE__ */ React.createElement("option", { value: "rating" }, "Rating"), /* @__PURE__ */ React.createElement("option", { value: "naam" }, "Naam"), /* @__PURE__ */ React.createElement("option", { value: "bezorgtijd" }, "Bezorgtijd"), /* @__PURE__ */ React.createElement("option", { value: "afstand" }, "Afstand")))), /* @__PURE__ */ React.createElement(CuisineChips, { restaurants, filters, setFilters, labels, limit: 18 })), /* @__PURE__ */ React.createElement("div", { className: "toolbar" }, /* @__PURE__ */ React.createElement("div", { className: "seg", role: "tablist" }, [["alle", "Alle"], ["beschikbaar", "Beschikbaar"], ["race", "In de race"], ["uitgesloten", "Uitgesloten"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, className: show === k ? "on" : "", onClick: () => setShow(k) }, l))), /* @__PURE__ */ React.createElement("div", { className: "dim", style: { fontSize: 13 } }, /* @__PURE__ */ React.createElement("b", { style: { color: "var(--text)" } }, okCount), " beschikbaar \xB7 ", rows.length, " getoond \xB7 ", restaurants.length, " totaal"), !readOnly && /* @__PURE__ */ React.createElement("div", { className: "btn-row" }, dups.length > 0 && /* @__PURE__ */ React.createElement("button", { className: "btn sm", title: dups.slice(0, 8).map(([a, b]) => a + " = " + b).join("\n"), onClick: () => {
+    const d = C.dedupeRestaurants(restaurants);
+    setRestaurants(d.list);
+    toast(`${d.merged.length} dubbele restaurant${d.merged.length === 1 ? "" : "s"} samengevoegd`, "ok");
+  } }, /* @__PURE__ */ React.createElement(Icon, { name: "restore" }), " ", dups.length, " dubbel", dups.length === 1 ? "" : "e", " samenvoegen"), /* @__PURE__ */ React.createElement("button", { className: "btn sm", onClick: () => onEdit({}) }, /* @__PURE__ */ React.createElement(Icon, { name: "plus" }), " Restaurant toevoegen"))), /* @__PURE__ */ React.createElement("div", { className: "r-grid" }, rows.map(({ r, c }) => {
     const n = counts.get(r.id) || 0;
     const isEx = exSet.has(r.id);
     const today = r.schedule[filters.day];
-    return /* @__PURE__ */ React.createElement("article", { key: r.id, className: "rcard" + (c.ok ? "" : " off") + (n ? " in" : "") }, /* @__PURE__ */ React.createElement("div", { className: "rimg" }, /* @__PURE__ */ React.createElement(RestaurantImg, { r, w: 480 }), r.logo && /* @__PURE__ */ React.createElement("img", { className: "logo", src: r.logo, alt: "", loading: "lazy", onError: (e) => e.target.remove() }), /* @__PURE__ */ React.createElement("div", { className: "badges" }, /* @__PURE__ */ React.createElement("span", { className: "pill" }, r.cuisine), r.rating != null ? /* @__PURE__ */ React.createElement("span", { className: "pill dark" }, /* @__PURE__ */ React.createElement(Icon, { name: "star", size: 11, style: { color: "#ffcf4a" } }), " ", r.rating.toFixed(1), r.ratingCount ? /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.6, fontWeight: 600 } }, " (", r.ratingCount > 999 ? Math.round(r.ratingCount / 100) / 10 + "k" : r.ratingCount, ")") : null) : /* @__PURE__ */ React.createElement("span", { className: "pill green" }, "Nieuw"), n > 0 && /* @__PURE__ */ React.createElement("span", { className: "pill", style: { background: "var(--accent)", color: "#fff", marginLeft: "auto" } }, n, "\xD7 in race"), isEx && /* @__PURE__ */ React.createElement("span", { className: "pill red", style: { marginLeft: n ? 0 : "auto" } }, "Uitgesloten"))), /* @__PURE__ */ React.createElement("div", { className: "rbody" + (r.logo ? " haslogo" : "") }, /* @__PURE__ */ React.createElement("div", { className: "rname", title: r.name }, r.name), /* @__PURE__ */ React.createElement("div", { className: "rstats" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Icon, { name: "truck", size: 13 }), " ", r.deliveryMinutes, r.deliveryMax ? "\u2013" + r.deliveryMax : "", " min"), r.distanceKm != null && /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Icon, { name: "pin", size: 13 }), " ", String(r.distanceKm).replace(".", ","), " km"), r.minOrder != null && /* @__PURE__ */ React.createElement("span", null, "Min. \u20AC", Number(r.minOrder).toFixed(2).replace(".", ","))), /* @__PURE__ */ React.createElement("div", { className: "avail " + (c.ok ? "ok" : "no") }, /* @__PURE__ */ React.createElement(Icon, { name: c.ok ? "check" : "clock", size: 13 }), c.ok ? `Eten vanaf ${C.fromMin(c.first)}` : c.reason, today && /* @__PURE__ */ React.createElement("span", { className: "dim", style: { fontWeight: 600 } }, "\xB7 bestellen ", today.open, "\u2013", today.close, r.scheduleEstimated ? "*" : "")), /* @__PURE__ */ React.createElement("div", { className: "days" }, DAYS.map((d) => /* @__PURE__ */ React.createElement("span", { key: d, className: "day" + (r.schedule[d] ? " open" : "") + (d === filters.day ? " sel" : ""), title: r.schedule[d] ? `${DAYS_NL[d]} ${r.schedule[d].open}\u2013${r.schedule[d].close}` : DAYS_NL[d] + " gesloten" }, DAYS_SHORT[d])))), /* @__PURE__ */ React.createElement("div", { className: "rfoot" }, /* @__PURE__ */ React.createElement("div", { className: "stepper", "aria-label": "Aantal in de race" }, /* @__PURE__ */ React.createElement("button", { onClick: () => step(r, -1), disabled: !n || busy || readOnly, "aria-label": "Minder" }, /* @__PURE__ */ React.createElement(Icon, { name: "minus", size: 14 })), /* @__PURE__ */ React.createElement("div", { className: "c" + (n ? " on" : "") }, n), /* @__PURE__ */ React.createElement("button", { onClick: () => step(r, 1), disabled: busy || readOnly || lineup.length >= 10 || n >= settings.maxSame, "aria-label": "Toevoegen aan race" }, /* @__PURE__ */ React.createElement(Icon, { name: "plus", size: 14 }))), !readOnly && /* @__PURE__ */ React.createElement("div", { className: "btn-row", style: { gap: 5 } }, r.url && /* @__PURE__ */ React.createElement("a", { className: "icon-btn sm", href: r.url, target: "_blank", rel: "noopener noreferrer", title: "Open bestelpagina", "aria-label": "Open bestelpagina" }, /* @__PURE__ */ React.createElement(Icon, { name: "external", size: 14 })), /* @__PURE__ */ React.createElement("button", { className: "icon-btn sm", onClick: () => onEdit(r), title: "Bewerken", "aria-label": "Bewerken" }, /* @__PURE__ */ React.createElement(Icon, { name: "pencil", size: 14 })), /* @__PURE__ */ React.createElement("button", { className: "icon-btn sm" + (isEx ? " on" : " danger"), onClick: () => setExcluded((x) => isEx ? x.filter((i) => i !== r.id) : [...x, r.id]), title: isEx ? "Weer laten meedoen" : "Uitsluiten van races", "aria-label": isEx ? "Weer laten meedoen" : "Uitsluiten" }, /* @__PURE__ */ React.createElement(Icon, { name: isEx ? "restore" : "ban", size: 14 })), /* @__PURE__ */ React.createElement("button", { className: "icon-btn sm danger", onClick: () => onDelete(r), title: "Verwijderen", "aria-label": "Verwijderen" }, /* @__PURE__ */ React.createElement(Icon, { name: "trash", size: 14 }))), readOnly && r.url && /* @__PURE__ */ React.createElement("a", { className: "icon-btn sm", href: r.url, target: "_blank", rel: "noopener noreferrer", title: "Open bestelpagina", "aria-label": "Open bestelpagina" }, /* @__PURE__ */ React.createElement(Icon, { name: "external", size: 14 }))));
+    return /* @__PURE__ */ React.createElement("article", { key: r.id, className: "rcard" + (c.ok ? "" : " off") + (n ? " in" : "") }, /* @__PURE__ */ React.createElement("div", { className: "rimg" }, /* @__PURE__ */ React.createElement(RestaurantImg, { r, w: 480 }), r.logo && /* @__PURE__ */ React.createElement("img", { className: "logo", src: r.logo, alt: "", loading: "lazy", onError: (e) => e.target.remove() }), /* @__PURE__ */ React.createElement("div", { className: "badges" }, /* @__PURE__ */ React.createElement("span", { className: "pill" }, r.cuisine), r.rating != null ? /* @__PURE__ */ React.createElement("span", { className: "pill dark" }, /* @__PURE__ */ React.createElement(Icon, { name: "star", size: 11, style: { color: "#ffcf4a" } }), " ", r.rating.toFixed(1), r.ratingCount ? /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.6, fontWeight: 600 } }, " (", r.ratingCount > 999 ? Math.round(r.ratingCount / 100) / 10 + "k" : r.ratingCount, ")") : null) : /* @__PURE__ */ React.createElement("span", { className: "pill green" }, "Nieuw"), n > 0 && /* @__PURE__ */ React.createElement("span", { className: "pill", style: { background: "var(--accent)", color: "#fff", marginLeft: "auto" } }, n, "\xD7 in race"), isEx && /* @__PURE__ */ React.createElement("span", { className: "pill red", style: { marginLeft: n ? 0 : "auto" } }, "Uitgesloten"))), /* @__PURE__ */ React.createElement("div", { className: "rbody" + (r.logo ? " haslogo" : "") }, /* @__PURE__ */ React.createElement("div", { className: "rname", title: r.name }, r.name), (() => {
+      const u = C.urlsOf(r), ks = Object.keys(u);
+      return ks.length ? /* @__PURE__ */ React.createElement("div", { className: "plats" }, ks.map((k) => /* @__PURE__ */ React.createElement("a", { key: k, className: "plat " + k, href: u[k], target: "_blank", rel: "noopener noreferrer", title: "Open bij " + C.PLATFORMS[k] }, C.PLATFORMS[k]))) : null;
+    })(), /* @__PURE__ */ React.createElement("div", { className: "rstats" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Icon, { name: "truck", size: 13 }), " ", r.deliveryMinutes, r.deliveryMax ? "\u2013" + r.deliveryMax : "", " min"), r.distanceKm != null && /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Icon, { name: "pin", size: 13 }), " ", String(r.distanceKm).replace(".", ","), " km"), r.minOrder != null && /* @__PURE__ */ React.createElement("span", null, "Min. \u20AC", Number(r.minOrder).toFixed(2).replace(".", ","))), /* @__PURE__ */ React.createElement("div", { className: "avail " + (c.ok ? "ok" : "no") }, /* @__PURE__ */ React.createElement(Icon, { name: c.ok ? "check" : "clock", size: 13 }), c.ok ? `Eten vanaf ${C.fromMin(c.first)}` : c.reason, today && /* @__PURE__ */ React.createElement("span", { className: "dim", style: { fontWeight: 600 } }, "\xB7 bestellen ", today.open, "\u2013", today.close, r.scheduleEstimated ? "*" : "")), /* @__PURE__ */ React.createElement("div", { className: "days" }, DAYS.map((d) => /* @__PURE__ */ React.createElement("span", { key: d, className: "day" + (r.schedule[d] ? " open" : "") + (d === filters.day ? " sel" : ""), title: r.schedule[d] ? `${DAYS_NL[d]} ${r.schedule[d].open}\u2013${r.schedule[d].close}` : DAYS_NL[d] + " gesloten" }, DAYS_SHORT[d])))), /* @__PURE__ */ React.createElement("div", { className: "rfoot" }, /* @__PURE__ */ React.createElement("div", { className: "stepper", "aria-label": "Aantal in de race" }, /* @__PURE__ */ React.createElement("button", { onClick: () => step(r, -1), disabled: !n || busy || readOnly, "aria-label": "Minder" }, /* @__PURE__ */ React.createElement(Icon, { name: "minus", size: 14 })), /* @__PURE__ */ React.createElement("div", { className: "c" + (n ? " on" : "") }, n), /* @__PURE__ */ React.createElement("button", { onClick: () => step(r, 1), disabled: busy || readOnly || lineup.length >= 10 || n >= settings.maxSame, "aria-label": "Toevoegen aan race" }, /* @__PURE__ */ React.createElement(Icon, { name: "plus", size: 14 }))), !readOnly && /* @__PURE__ */ React.createElement("div", { className: "btn-row", style: { gap: 5 } }, r.url && /* @__PURE__ */ React.createElement("a", { className: "icon-btn sm", href: r.url, target: "_blank", rel: "noopener noreferrer", title: "Open bestelpagina", "aria-label": "Open bestelpagina" }, /* @__PURE__ */ React.createElement(Icon, { name: "external", size: 14 })), /* @__PURE__ */ React.createElement("button", { className: "icon-btn sm", onClick: () => onEdit(r), title: "Bewerken", "aria-label": "Bewerken" }, /* @__PURE__ */ React.createElement(Icon, { name: "pencil", size: 14 })), /* @__PURE__ */ React.createElement("button", { className: "icon-btn sm" + (isEx ? " on" : " danger"), onClick: () => setExcluded((x) => isEx ? x.filter((i) => i !== r.id) : [...x, r.id]), title: isEx ? "Weer laten meedoen" : "Uitsluiten van races", "aria-label": isEx ? "Weer laten meedoen" : "Uitsluiten" }, /* @__PURE__ */ React.createElement(Icon, { name: isEx ? "restore" : "ban", size: 14 })), /* @__PURE__ */ React.createElement("button", { className: "icon-btn sm danger", onClick: () => onDelete(r), title: "Verwijderen", "aria-label": "Verwijderen" }, /* @__PURE__ */ React.createElement(Icon, { name: "trash", size: 14 }))), readOnly && r.url && /* @__PURE__ */ React.createElement("a", { className: "icon-btn sm", href: r.url, target: "_blank", rel: "noopener noreferrer", title: "Open bestelpagina", "aria-label": "Open bestelpagina" }, /* @__PURE__ */ React.createElement(Icon, { name: "external", size: 14 }))));
   })), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "empty-slot", style: { padding: 30 } }, restaurants.length ? "Niets gevonden." : props.emptyUI), /* @__PURE__ */ React.createElement("p", { className: "dim", style: { fontSize: 12, marginTop: 12 } }, "* Tijden geschat: Thuisbezorgd geeft alleen de openingstijd van vandaag door. Pas ze aan via het potlood als ze afwijken."));
 }
 function EditModal({ initial, onSave, onClose, allCuisines }) {
@@ -3993,17 +4185,17 @@ function ImportPanel({ settings, setSettings, meta, setMeta, awaiting, setAwaiti
   }
   const last = meta.lastImport;
   const step1 = !!meta.bookmarkletReady;
-  return /* @__PURE__ */ React.createElement("div", { className: "card import", style: { marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { className: "import-head" }, /* @__PURE__ */ React.createElement("div", { className: "logo" }, "\u{1F6F5}"), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 200 } }, /* @__PURE__ */ React.createElement("div", { className: "panel-t" }, "Thuisbezorgd koppelen"), /* @__PURE__ */ React.createElement("div", { className: "dim", style: { fontSize: 13 } }, last ? `Laatst bijgewerkt ${new Date(last.at).toLocaleString("nl-NL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} \xB7 ${last.count} restaurants \xB7 ${last.location || ""}` : `Haal alle restaurants van jouw postcode op, met foto's, ratings en bezorgtijden. Nu: ${restaurantsCount} restaurants.`)), !preview && /* @__PURE__ */ React.createElement("button", { className: "btn " + (open ? "ghost" : "primary"), onClick: () => setOpen(!open) }, open ? "Inklappen" : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Icon, { name: "download" }), " Restaurants ophalen"))), open && !preview && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "steps" }, /* @__PURE__ */ React.createElement("div", { className: "step" + (step1 ? " done" : " active") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { className: "step-n" }, step1 ? "\u2713" : 1), /* @__PURE__ */ React.createElement("h4", null, "Eenmalig: bladwijzer")), /* @__PURE__ */ React.createElement("p", null, "Sleep de paarse knop naar je bladwijzerbalk. Niet zichtbaar? ", /* @__PURE__ */ React.createElement("span", { className: "kbd" }, "Ctrl+Shift+B"), " (Mac: ", /* @__PURE__ */ React.createElement("span", { className: "kbd" }, "\u2318+Shift+B"), ")."), /* @__PURE__ */ React.createElement("a", { ref: bmRef, className: "bookmarklet", draggable: "true", onClick: (e) => {
+  return /* @__PURE__ */ React.createElement("div", { className: "card import", style: { marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { className: "import-head" }, /* @__PURE__ */ React.createElement("div", { className: "logo" }, "\u{1F6F5}"), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 200 } }, /* @__PURE__ */ React.createElement("div", { className: "panel-t" }, "Thuisbezorgd & Uber Eats koppelen"), /* @__PURE__ */ React.createElement("div", { className: "dim", style: { fontSize: 13 } }, last ? `Laatst bijgewerkt ${new Date(last.at).toLocaleString("nl-NL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} \xB7 ${last.count} restaurants \xB7 ${last.location || ""}` : `Haal alle restaurants van jouw postcode op, met foto's, ratings en bezorgtijden. Nu: ${restaurantsCount} restaurants.`)), !preview && /* @__PURE__ */ React.createElement("button", { className: "btn " + (open ? "ghost" : "primary"), onClick: () => setOpen(!open) }, open ? "Inklappen" : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Icon, { name: "download" }), " Restaurants ophalen"))), open && !preview && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "steps" }, /* @__PURE__ */ React.createElement("div", { className: "step" + (step1 ? " done" : " active") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { className: "step-n" }, step1 ? "\u2713" : 1), /* @__PURE__ */ React.createElement("h4", null, "Eenmalig: bladwijzer")), /* @__PURE__ */ React.createElement("p", null, "Sleep de paarse knop naar je bladwijzerbalk. Niet zichtbaar? ", /* @__PURE__ */ React.createElement("span", { className: "kbd" }, "Ctrl+Shift+B"), " (Mac: ", /* @__PURE__ */ React.createElement("span", { className: "kbd" }, "\u2318+Shift+B"), ")."), /* @__PURE__ */ React.createElement("a", { ref: bmRef, className: "bookmarklet", draggable: "true", onClick: (e) => {
     e.preventDefault();
     toast("Sleep deze knop naar je bladwijzerbalk \u2014 hier klikken doet niets.");
-  }, onDragEnd: () => setMeta((m) => ({ ...m, bookmarkletReady: true })) }, "\u{1F415} Naar Hondenrace"), !step1 && /* @__PURE__ */ React.createElement("button", { className: "btn sm ghost", style: { alignSelf: "flex-start" }, onClick: () => setMeta((m) => ({ ...m, bookmarkletReady: true })) }, "Staat er al")), /* @__PURE__ */ React.createElement("div", { className: "step" + (step1 && !awaiting ? " active" : "") + (awaiting ? " done" : "") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { className: "step-n" }, awaiting ? "\u2713" : 2), /* @__PURE__ */ React.createElement("h4", null, "Open Thuisbezorgd")), /* @__PURE__ */ React.createElement("p", null, "Plaats + postcode zoals in de Thuisbezorgd-link, of plak een volledige link."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6 } }, /* @__PURE__ */ React.createElement("input", { className: "input sm", style: { flex: 1 }, value: settings.location, onChange: (e) => setSettings((s) => ({ ...s, location: e.target.value })), placeholder: "eindhoven-5617", "aria-label": "Locatie" }), /* @__PURE__ */ React.createElement("a", { className: "btn sm primary", href: tbUrl, target: "_blank", rel: "opener", onClick: () => setAwaiting(Date.now()) }, /* @__PURE__ */ React.createElement(Icon, { name: "external", size: 14 }), " Open"))), /* @__PURE__ */ React.createElement("div", { className: "step" + (awaiting ? " active" : "") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { className: "step-n" }, "3"), /* @__PURE__ */ React.createElement("h4", null, "Klik op je bladwijzer")), /* @__PURE__ */ React.createElement("p", null, "Klik in het Thuisbezorgd-tabblad op ", /* @__PURE__ */ React.createElement("b", null, "\u{1F415} Naar Hondenrace"), '. De restaurants komen vanzelf hierheen. Zegt de melding "gekopieerd"? Kom dan terug en druk op ', /* @__PURE__ */ React.createElement("span", { className: "kbd" }, "Ctrl+V"), " (Mac: ", /* @__PURE__ */ React.createElement("span", { className: "kbd" }, "\u2318+V"), ")."), awaiting ? /* @__PURE__ */ React.createElement("div", { className: "waiting" }, /* @__PURE__ */ React.createElement("span", { className: "spinner" }), " Wachten op Thuisbezorgd\u2026", /* @__PURE__ */ React.createElement("button", { className: "btn sm ghost", style: { marginLeft: "auto" }, onClick: () => setAwaiting(null) }, "Stop")) : /* @__PURE__ */ React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "E\xE9n keer importeren is genoeg: iedereen ziet dezelfde lijst."))), /* @__PURE__ */ React.createElement("div", { className: "dropzone" + (over ? " over" : ""), onDragOver: (e) => {
+  }, onDragEnd: () => setMeta((m) => ({ ...m, bookmarkletReady: true })) }, "\u{1F415} Naar Hondenrace"), !step1 && /* @__PURE__ */ React.createElement("button", { className: "btn sm ghost", style: { alignSelf: "flex-start" }, onClick: () => setMeta((m) => ({ ...m, bookmarkletReady: true })) }, "Staat er al")), /* @__PURE__ */ React.createElement("div", { className: "step" + (step1 && !awaiting ? " active" : "") + (awaiting ? " done" : "") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { className: "step-n" }, awaiting ? "\u2713" : 2), /* @__PURE__ */ React.createElement("h4", null, "Open Thuisbezorgd of Uber Eats")), /* @__PURE__ */ React.createElement("p", null, "Thuisbezorgd: plaats + postcode zoals in de link. Uber Eats: zorg dat je bezorgadres daar is ingesteld."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6 } }, /* @__PURE__ */ React.createElement("input", { className: "input sm", style: { flex: 1 }, value: settings.location, onChange: (e) => setSettings((s) => ({ ...s, location: e.target.value })), placeholder: "eindhoven-5617", "aria-label": "Locatie" }), /* @__PURE__ */ React.createElement("a", { className: "btn sm primary", href: tbUrl, target: "_blank", rel: "opener", onClick: () => setAwaiting(Date.now()) }, /* @__PURE__ */ React.createElement(Icon, { name: "external", size: 14 }), " Thuisbezorgd")), /* @__PURE__ */ React.createElement("a", { className: "btn sm ue-btn", style: { alignSelf: "flex-start" }, href: "https://www.ubereats.com/nl/feed?diningMode=DELIVERY", target: "_blank", rel: "opener", onClick: () => setAwaiting(Date.now()) }, /* @__PURE__ */ React.createElement(Icon, { name: "external", size: 14 }), " Uber Eats")), /* @__PURE__ */ React.createElement("div", { className: "step" + (awaiting ? " active" : "") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { className: "step-n" }, "3"), /* @__PURE__ */ React.createElement("h4", null, "Klik op je bladwijzer")), /* @__PURE__ */ React.createElement("p", null, "Klik in het Thuisbezorgd- of Uber Eats-tabblad op ", /* @__PURE__ */ React.createElement("b", null, "\u{1F415} Naar Hondenrace"), ' (bij Uber Eats duurt het ophalen een halve minuut). De restaurants komen vanzelf hierheen. Zegt de melding "gekopieerd"? Kom dan terug en druk op ', /* @__PURE__ */ React.createElement("span", { className: "kbd" }, "Ctrl+V"), " (Mac: ", /* @__PURE__ */ React.createElement("span", { className: "kbd" }, "\u2318+V"), ")."), awaiting ? /* @__PURE__ */ React.createElement("div", { className: "waiting" }, /* @__PURE__ */ React.createElement("span", { className: "spinner" }), " Wachten op de bladwijzer\u2026", /* @__PURE__ */ React.createElement("button", { className: "btn sm ghost", style: { marginLeft: "auto" }, onClick: () => setAwaiting(null) }, "Stop")) : /* @__PURE__ */ React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "E\xE9n keer importeren is genoeg: iedereen ziet dezelfde lijst."))), /* @__PURE__ */ React.createElement("div", { className: "dropzone" + (over ? " over" : ""), onDragOver: (e) => {
     e.preventDefault();
     setOver(true);
   }, onDragLeave: () => setOver(false), onDrop }, /* @__PURE__ */ React.createElement(Icon, { name: "upload", size: 22 }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("b", null, "Werkt de bladwijzer niet?"), " Sla de Thuisbezorgd-pagina op (", /* @__PURE__ */ React.createElement("span", { className: "kbd" }, "Ctrl+S"), ") en sleep het bestand hierheen. Een back-up (.json) kan hier ook."), /* @__PURE__ */ React.createElement("label", { className: "btn sm", style: { cursor: "pointer" } }, /* @__PURE__ */ React.createElement(Icon, { name: "upload", size: 14 }), " Kies bestand", /* @__PURE__ */ React.createElement("input", { type: "file", accept: ".html,.htm,.json,.txt", hidden: true, onChange: (e) => {
     const f = e.target.files[0];
     if (f) f.text().then((t) => handleText(t, f.name));
     e.target.value = "";
-  } })))), preview && /* @__PURE__ */ React.createElement("div", { className: "preview" }, /* @__PURE__ */ React.createElement("div", { className: "panel-h" }, /* @__PURE__ */ React.createElement("div", { className: "panel-t" }, /* @__PURE__ */ React.createElement(Icon, { name: "check", style: { color: "var(--go)" } }), " ", preview.restaurants.length, " restaurants ontvangen", preview.location ? " \xB7 " + preview.location : ""), /* @__PURE__ */ React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "via ", preview.via)), /* @__PURE__ */ React.createElement("div", { className: "stat-tiles", style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { className: "tile" }, /* @__PURE__ */ React.createElement("b", { style: { color: "var(--go)" } }, preview.newCount), /* @__PURE__ */ React.createElement("span", null, "nieuw")), /* @__PURE__ */ React.createElement("div", { className: "tile" }, /* @__PURE__ */ React.createElement("b", { style: { color: "var(--accent)" } }, preview.updCount), /* @__PURE__ */ React.createElement("span", null, "bijgewerkt")), /* @__PURE__ */ React.createElement("div", { className: "tile" }, /* @__PURE__ */ React.createElement("b", null, preview.cuisineCount), /* @__PURE__ */ React.createElement("span", null, "keukens")), /* @__PURE__ */ React.createElement("div", { className: "tile" }, /* @__PURE__ */ React.createElement("b", { style: { color: "var(--text-dim)" } }, preview.skipped.length + (preview.deletedSkipped || 0)), /* @__PURE__ */ React.createElement("span", null, "overgeslagen (geen eten / verwijderd)"))), /* @__PURE__ */ React.createElement("div", { className: "btn-row" }, /* @__PURE__ */ React.createElement("button", { className: "btn go", onClick: () => applyPreview("merge") }, /* @__PURE__ */ React.createElement(Icon, { name: "check" }), " Bijwerken + nieuwe toevoegen"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => applyPreview("replace") }, /* @__PURE__ */ React.createElement(Icon, { name: "restore" }), " Lijst vervangen"), /* @__PURE__ */ React.createElement("button", { className: "btn ghost", onClick: cancelPreview }, "Annuleren")), /* @__PURE__ */ React.createElement("p", { className: "dim", style: { fontSize: 12, marginTop: 8 } }, "Bijwerken behoudt je eigen aanpassingen aan openingstijden. Vervangen houdt alleen zelf toegevoegde restaurants.")));
+  } })))), preview && /* @__PURE__ */ React.createElement("div", { className: "preview" }, /* @__PURE__ */ React.createElement("div", { className: "panel-h" }, /* @__PURE__ */ React.createElement("div", { className: "panel-t" }, /* @__PURE__ */ React.createElement(Icon, { name: "check", style: { color: "var(--go)" } }), " ", preview.restaurants.length, " restaurants ontvangen", preview.location ? " \xB7 " + preview.location : ""), /* @__PURE__ */ React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "via ", preview.via)), /* @__PURE__ */ React.createElement("div", { className: "stat-tiles", style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { className: "tile" }, /* @__PURE__ */ React.createElement("b", { style: { color: "var(--go)" } }, preview.newCount), /* @__PURE__ */ React.createElement("span", null, "nieuw")), /* @__PURE__ */ React.createElement("div", { className: "tile" }, /* @__PURE__ */ React.createElement("b", { style: { color: "var(--accent)" } }, preview.updCount), /* @__PURE__ */ React.createElement("span", null, "bijgewerkt")), /* @__PURE__ */ React.createElement("div", { className: "tile" }, /* @__PURE__ */ React.createElement("b", { style: { color: "var(--accent)" } }, preview.mergedCount || 0), /* @__PURE__ */ React.createElement("span", null, "dubbel, samengevoegd")), /* @__PURE__ */ React.createElement("div", { className: "tile" }, /* @__PURE__ */ React.createElement("b", null, preview.cuisineCount), /* @__PURE__ */ React.createElement("span", null, "keukens")), /* @__PURE__ */ React.createElement("div", { className: "tile" }, /* @__PURE__ */ React.createElement("b", { style: { color: "var(--text-dim)" } }, preview.skipped.length + (preview.deletedSkipped || 0)), /* @__PURE__ */ React.createElement("span", null, "overgeslagen (geen eten / verwijderd)"))), /* @__PURE__ */ React.createElement("div", { className: "btn-row" }, /* @__PURE__ */ React.createElement("button", { className: "btn go", onClick: () => applyPreview("merge") }, /* @__PURE__ */ React.createElement(Icon, { name: "check" }), " Bijwerken + nieuwe toevoegen"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => applyPreview("replace") }, /* @__PURE__ */ React.createElement(Icon, { name: "restore" }), " Lijst vervangen"), /* @__PURE__ */ React.createElement("button", { className: "btn ghost", onClick: cancelPreview }, "Annuleren")), /* @__PURE__ */ React.createElement("p", { className: "dim", style: { fontSize: 12, marginTop: 8 } }, "Bijwerken behoudt je eigen aanpassingen aan openingstijden. Vervangen vervangt alleen de restaurants van ", preview.platformLabel || "dit platform", "; eigen restaurants en het andere platform blijven staan. Hetzelfde restaurant op beide platforms wordt \xE9\xE9n hond.")));
 }
 function StatsTab({ history, players, onClearHistory, onResetScores, ask, readOnly }) {
   const winners = useMemo(() => {
@@ -4327,6 +4519,7 @@ function App() {
     deliveryMinutes: r.deliveryMinutes,
     deliveryMax: r.deliveryMax || null,
     url: r.url || "",
+    urls: r.urls || null,
     image: r.image || null,
     logo: r.logo || null,
     schedule: r.schedule,
@@ -4469,6 +4662,7 @@ function App() {
       rid: w.rid,
       cuisine: w.cuisine,
       url: w.url || "",
+      urls: w.urls || null,
       date: now.toLocaleDateString("nl-NL"),
       time: now.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" }),
       photoFinish: !!res.photo,
@@ -4543,11 +4737,12 @@ function App() {
     const list = parsed.restaurants.filter((r) => !del.has(C.normName(r.name)));
     const byName = new Set(restaurants.map((r) => C.normName(r.name))), byId = new Set(restaurants.map((r) => r.id));
     const upd = list.filter((r) => byId.has(r.id) || byName.has(C.normName(r.name))).length;
-    setPreview({ ...parsed, restaurants: list, via, deletedSkipped: before - list.length, newCount: list.length - upd, updCount: upd, cuisineCount: new Set(list.map((r) => r.cuisine)).size });
+    const dry = C.mergeRestaurants(restaurants, list, "merge");
+    setPreview({ ...parsed, restaurants: list, via, deletedSkipped: before - list.length, newCount: dry.added, updCount: dry.updated, mergedCount: dry.merged, cuisineCount: new Set(list.map((r) => r.cuisine)).size });
     setAwaiting(null);
     setImportOpen(true);
     setTab("restaurants");
-    toast(`${list.length} restaurants ontvangen van Thuisbezorgd`, "ok");
+    toast(`${list.length} restaurants ontvangen van ${parsed.platformLabel || "Thuisbezorgd"}`, "ok");
   }, [deleted, restaurants]);
   const handleText = useCallback(async (text, via) => {
     try {
@@ -4570,9 +4765,9 @@ function App() {
   useEffect(() => {
     const onMsg = (e) => {
       if (!e.data || e.data.type !== C.MSG_TYPE) return;
-      if (!/^https:\/\/([a-z0-9-]+\.)*thuisbezorgd\.nl$/i.test(e.origin)) return;
+      if (!/^https:\/\/([a-z0-9-]+\.)*(thuisbezorgd\.nl|ubereats\.com)$/i.test(e.origin)) return;
       try {
-        handleIncoming(C.fromThuisbezorgd(e.data), "bladwijzer");
+        handleIncoming(C.fromPayload(e.data), "bladwijzer");
         window.focus();
       } catch (err) {
         toast("Import mislukt: " + err.message, "err");
@@ -4601,7 +4796,7 @@ function App() {
     setLineup((l) => l.filter((r) => ids.has(r.rid)));
     setPreview(null);
     setImportOpen(false);
-    toast(mode === "replace" ? `Lijst vervangen: ${m.list.length} restaurants` : `${m.added} nieuw, ${m.updated} bijgewerkt`, "ok");
+    toast(mode === "replace" ? `Lijst vervangen: ${m.list.length} restaurants` : `${m.added} nieuw, ${m.updated} bijgewerkt${m.merged ? `, ${m.merged} dubbel samengevoegd` : ""}`, "ok");
   }
   async function deleteRestaurant(r) {
     if (busy || readOnly) return;
