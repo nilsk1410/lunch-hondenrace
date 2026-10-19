@@ -15,9 +15,11 @@ const REDIS_URL = (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '';
 const ADMIN_CODE = String(process.env.ADMIN_CODE || '').trim();
 const P = 'lhr:';
-const MAX_RUNNERS = 10;
+const MAX_RUNNERS = 24; // meer dan 8 honden = toernooi met heats
 const MAX_RACES = 150;
 const PATH_RE = /^[A-Za-z0-9_-]{1,40}\/[A-Za-z0-9_.:-]{1,100}$/;
+// de startlijst geldt per dag (Nederlandse tijd); honden van gisteren tellen niet meer mee
+const today = () => { try { return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Amsterdam' }); } catch (e) { return new Date().toISOString().slice(0, 10); } };
 
 async function redis(cmds) {
     const r = await fetch(REDIS_URL + '/pipeline', {
@@ -67,7 +69,7 @@ function cleanRunner(r, clientId) {
         url: STR(r.url, 500) || '', urls: r.urls && typeof r.urls === 'object' ? { thuisbezorgd: STR(r.urls.thuisbezorgd, 500), ubereats: STR(r.urls.ubereats, 500) } : null, image: STR(r.image, 600), logo: STR(r.logo, 600), minOrder: NUM(r.minOrder), brand: STR(r.brand, 80),
         coat: STR(r.coat, 40), seed: NUM(r.seed), dogName: STR(r.dogName, 80),
         schedule: r.schedule && typeof r.schedule === 'object' && JSON.stringify(r.schedule).length < 3000 ? r.schedule : null,
-        by: STR(r.by, 24) || 'Collega', byId: clientId,
+        by: STR(r.by, 24) || 'Collega', byId: clientId, day: today(),
     };
     if (!out.key || !out.name) return null;
     return out;
@@ -89,12 +91,13 @@ async function writeLineup(req, res, { data, baseV }, isAdmin, clientId) {
     } else {
         if (!clientId) return res.status(400).json({ error: 'invalid_argument', message: 'Geen browser-id' });
         const mineNew = nextRunners.filter(r => r.byId === clientId).slice(-1).map(r => cleanRunner(r, clientId)).filter(Boolean);
-        const others = curRunners.filter(r => r.byId !== clientId);
+        const day = today();
+        const others = curRunners.filter(r => r.byId !== clientId && (r.day || curData.day || day) === day);
         const mineCur = curRunners.filter(r => r.byId === clientId);
         if (mineNew.length && mineCur.length && mineCur[0].key === mineNew[0].key) result = curData; // niets veranderd
         else {
             if (mineNew.length && others.length >= MAX_RUNNERS) return res.status(409).json({ error: 'full', message: 'De startlijst is vol' });
-            result = { ...curData, runners: [...others, ...mineNew] };
+            result = { ...curData, day, runners: [...others, ...mineNew] };
         }
     }
     const curKeys = new Set(curRunners.map(r => r.key));
